@@ -3,6 +3,6 @@ langchain_community==0.3.23
 langchain_google_genai==2.1.4
 langchain_pinecone==0.2.6
 pinecone==6.0.2
-protobuf==3.12.4
+protobuf>=3.20
 python-dotenv==1.1.0
 streamlit==1.45.0
