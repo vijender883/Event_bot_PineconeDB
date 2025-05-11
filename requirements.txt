@@ -1,0 +1,10 @@
+langchain
+langchain-google-vertexai
+langchain_google_genai
+streamlit
+langchain-pinecone
+langchain-community
+python-dotenv
+pinecone-client
+pypdf
+google.generativeai
