@@ -92,6 +92,7 @@ class EventAssistantRAGBot:
         vector_db_time = 0
         llm_time = 0
         raw_response = ""
+        processed_response_text = "" # Initialize processed response text
 
         try:
             # Using Google embeddings
@@ -144,11 +145,11 @@ class EventAssistantRAGBot:
                 llm_time = end_time - start_time
 
                 raw_response = response.text
-                processed_response = self.post_process_response(raw_response, query)
+                processed_response_text = self.post_process_response(raw_response, query)
 
-            # Return the processed response and timing information
+            # Return a dictionary including the text and timing information
             return {
-                "response": processed_response,
+                "text": processed_response_text,
                 "vector_db_time": vector_db_time,
                 "llm_time": llm_time
             }
@@ -156,9 +157,9 @@ class EventAssistantRAGBot:
         except Exception as e:
             # Return error message and zero times in case of error
             return {
-                "response": f"An error occurred: {str(e)}",
-                "vector_db_time": 0,
-                "llm_time": 0
+                "text": f"An error occurred: {str(e)}",
+                "vector_db_time": vector_db_time,
+                "llm_time": llm_time
             }
 
 
@@ -169,7 +170,7 @@ st.set_page_config(
     layout="centered"
 )
 
-# Load the CSS as before
+# Load the CSS, matching the styles from the Chroma version
 st.markdown("""
 <style>
 /* Bot message formatting */
@@ -179,6 +180,13 @@ st.markdown("""
     margin-bottom: 0 !important;
     color: black !important;
     background-color: #fcf8ed !important; /* Off-white background */
+    padding: 10px 15px !important; /* Add padding */
+    border-radius: 18px !important; /* Add border-radius */
+    max-width: 80% !important; /* Set max width */
+    margin-left: 10px !important; /* Add margin */
+    word-wrap: break-word !important; /* Handle long words */
+    display: flex !important; /* Use flexbox */
+    flex-direction: column !important; /* Stack content and timings */
 }
 
 .bot-message ol {
@@ -196,6 +204,15 @@ st.markdown("""
 .bot-message p {
     margin-bottom: 10px !important;
 }
+
+.bot-message-content {
+    /* Styles for the main text content */
+    flex-grow: 1 !important; /* Allows content to take available space */
+    margin-bottom: 5px !important; /* Space between content and timings */
+    line-height: 1.5 !important;
+    white-space: pre-line !important;
+}
+
 
 /* Chat container and message styles */
 .custom-chat-container {
@@ -245,27 +262,19 @@ st.markdown("""
     word-wrap: break-word !important;
 }
 
-.bot-message {
-    background-color: #fcf8ed !important; /* Off-white background */
-    color: black !important;
-    padding: 10px 15px !important;
-    border-radius: 18px !important;
-    max-width: 80% !important;
-    margin-left: 10px !important;
-    word-wrap: break-word !important;
+
+.bot-message-timings {
+    font-size: 0.75em !important; /* Smaller font */
+    color: #555 !important; /* Darker gray */
+    margin-top: 5px !important; /* Add spacing */
+    display: block !important; /* Ensure it's on its own line */
+    align-self: flex-end !important; /* Align timings to the right */
 }
+
 div.custom-chat-container {
     border-radius: 15px;
     border: 1px solid #ccc; /* Optional border */
     padding: 10px;          /* Optional padding */
-}
-/* New style for timing info */
-.timing-info {
-    font-size: 0.8em;
-    color: #555;
-    margin-top: 5px;
-    margin-left: 10px; /* Align with bot message */
-    text-align: left;
 }
 </style>
 """, unsafe_allow_html=True)
@@ -303,9 +312,9 @@ if "bot" not in st.session_state:
             index_name=pinecone_index
         )
 
-    # Add welcome message with options
+    # Add welcome message with options - Store as a dictionary like in Chroma version
     if not st.session_state.messages:
-        welcome_message = """Hello! I'm Event bot.
+        welcome_message_text = """Hello! I'm Event bot.
 I can help you with the following:
 1. Agenda of the "Build with AI" workshop
 2. Important Dates of this workshop
@@ -316,12 +325,12 @@ I can help you with the following:
 
 How can I help you with information about this event?"""
 
+        # Store welcome message as a dictionary with None for timings
         st.session_state.messages.append(
-            {"role": "assistant", "content": welcome_message, "vector_db_time": None, "llm_time": None} # Add timing keys, set to None for welcome message
+            {"role": "assistant", "content": {"text": welcome_message_text, "vector_db_time": None, "llm_time": None}}
         )
 
-# Custom Chat UI Implementation - Same as previous example
-# Open a container div for the chat
+# Custom Chat UI Implementation - Matching Chroma version
 chat_html = '<div class="custom-chat-container">'
 
 # Add all messages to the custom chat HTML
@@ -330,26 +339,33 @@ for message in st.session_state.messages:
         avatar = '<div class="avatar-icon user-avatar-icon">👤</div>'
         chat_html += f'<div class="message-container user">'
         chat_html += avatar
+        # User messages are simple text
         chat_html += f'<div class="user-message">{html.escape(message["content"])}</div>'
         chat_html += '</div>'
     else:  # assistant
         avatar = '<div class="avatar-icon">🤖</div>'
+        # We apply the bot-message class to the INNER div, which contains content and timings
         chat_html += f'<div class="message-container">'
         chat_html += avatar
-        # Get the content
-        content = message["content"]
 
-        # Format differently based on whether it's the welcome message
-        if "I can help you with the following:" in content:
-            # For the welcome message - Create the HTML directly without f-strings
-            # This avoids the backslash issue entirely
-            welcome_html = content
-            # First replace the beginning part
-            welcome_html = welcome_html.replace(
+        # Access the content dictionary
+        content_dict = message["content"]
+        content_text = content_dict["text"]
+        vector_db_time = content_dict.get("vector_db_time")
+        llm_time = content_dict.get("llm_time")
+
+        # Start the inner bot message div that holds both content and timings
+        chat_html += '<div class="bot-message">'
+
+        # Format message content - Special handling for the welcome message
+        # Check if it's the welcome message by checking for the list items
+        if "I can help you with the following:" in content_text and "1." in content_text:
+             # For the welcome message - Use the existing welcome_html logic
+            # Note: Escaping is not done here for the welcome message's structured HTML parts
+            welcome_html = content_text.replace(
                 "Hello! I'm Event bot.\nI can help you with the following:",
                 "Hello! I'm Event bot.<br><br>I can help you with the following:"
             )
-            # Then handle numbered list items (using regular strings, not f-strings)
             welcome_html = welcome_html.replace('\n1. ', "<ol style='margin-top:8px;margin-bottom:8px;padding-left:25px;'><li style='margin-bottom:4px;'>")
             welcome_html = welcome_html.replace('\n2. ', "</li><li style='margin-bottom:4px;'>")
             welcome_html = welcome_html.replace('\n3. ', "</li><li style='margin-bottom:4px;'>")
@@ -358,27 +374,24 @@ for message in st.session_state.messages:
             welcome_html = welcome_html.replace('\n6. ', "</li><li style='margin-bottom:4px;'>")
             welcome_html = welcome_html.replace('\n\nHow can I help you', "</li></ol><br>How can I help you")
 
-            # Add to chat HTML without using f-string with the processed content
-            chat_html += '<div class="bot-message">' + welcome_html + '</div>'
+            chat_html += '<div class="bot-message-content">' + welcome_html + '</div>'
+
         else:
-            # For regular messages - first escape HTML
-            escaped_content = html.escape(content)
-            # Replace newlines with <br> tags
+            # For regular messages - escape and format text content
+            escaped_content = html.escape(content_text)
             formatted_content = escaped_content.replace('\n', '<br>')
-            # Add to chat HTML without using f-string for the processed content
-            chat_html += '<div class="bot-message">' + formatted_content + '</div>'
 
-            # Add timing information if available
-            if message.get("vector_db_time") is not None and message.get("llm_time") is not None:
-                 timing_html = (
-                    f'<div class="timing-info">'
-                    f'Vector DB time: {message["vector_db_time"]:.2f}s | '
-                    f'LLM time: {message["llm_time"]:.2f}s'
-                    f'</div>'
-                 )
-                 chat_html += timing_html
+            chat_html += f'<div class="bot-message-content">{formatted_content}</div>'
 
-        chat_html += '</div>'
+        # Add timings if available (not for the welcome message which has None)
+        if vector_db_time is not None and llm_time is not None:
+             timings_html = f'<span class="bot-message-timings">Vector DB: {vector_db_time:.2f}s | LLM: {llm_time:.2f}s</span>'
+             chat_html += timings_html
+
+        # Close the inner bot message div
+        chat_html += '</div>' # Closes bot-message
+
+        chat_html += '</div>' # Closes message-container
 
 # Close the container div
 chat_html += '</div>'
@@ -393,18 +406,11 @@ if user_input:
     # Add user message to chat history
     st.session_state.messages.append({"role": "user", "content": user_input})
 
-    # Generate response, which now returns a dict with response and timings
-    response_data = st.session_state.bot.answer_question(user_input)
+    # Generate response (this now returns a dict)
+    response_dict = st.session_state.bot.answer_question(user_input)
 
-    # Add assistant response and timings to chat history
-    st.session_state.messages.append(
-        {
-            "role": "assistant",
-            "content": response_data["response"],
-            "vector_db_time": response_data["vector_db_time"],
-            "llm_time": response_data["llm_time"]
-        }
-    )
+    # Add assistant response (the dict) to chat history
+    st.session_state.messages.append({"role": "assistant", "content": response_dict})
 
     # Rerun to update the UI
     st.rerun()
