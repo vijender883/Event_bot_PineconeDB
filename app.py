@@ -20,10 +20,10 @@ class EventAssistantRAGBot:
         self.pinecone_cloud = pinecone_cloud
         self.pinecone_region = pinecone_region
         self.index_name = index_name
-        
+
         # Initialize Pinecone with new SDK
         self.pc = Pinecone(api_key=self.pinecone_api_key)
-        
+
         # Initialize Gemini client
         self.client = genai.Client(api_key=self.api_key)
         self.prompt_template = """
@@ -47,7 +47,7 @@ class EventAssistantRAGBot:
         Context information about the event:
         {context}
         --------
-        
+
         Now, please answer this question about the event: {question}
         """
 
@@ -58,10 +58,10 @@ class EventAssistantRAGBot:
         if "lunch" in query.lower() or "food" in query.lower() or "eat" in query.lower():
             # Just start with "Regarding lunch:" without the greeting
             formatted = "Regarding lunch:\n\n"
-            
+
             # Split into readable bullet points
             points = []
-            
+
             # Extract key information using common phrases and format as separate points
             if "provided to all" in response:
                 points.append("• Lunch will be provided to all participants who have checked in at the venue.")
@@ -75,45 +75,54 @@ class EventAssistantRAGBot:
                 points.append("• Please ensure you've completed the check-in process at the registration desk to be eligible.")
             if "volunteer" in response.lower() or "direction" in response.lower():
                 points.append("• Feel free to ask a volunteer if you need directions to the cafeteria.")
-                
+
             # If we couldn't extract structured points, just use the original
             if not points:
                 return response
-                
+
             # Combine all points with line breaks
             return formatted + "\n".join(points)
-        
+
         # For other responses, just return the original
         return response
 
     def answer_question(self, query):
-        """Use RAG with Google Gemini to answer a question based on retrieved context."""
+        """Use RAG with Google Gemini to answer a question based on retrieved context,
+        and measure component response times."""
+        vector_db_time = 0
+        llm_time = 0
+        raw_response = ""
+
         try:
+            # Using Google embeddings
+            embedding_function = GoogleGenerativeAIEmbeddings(
+                model="models/embedding-001",
+                google_api_key=self.api_key
+            )
+
+            # Retrieve relevant documents from Pinecone using the new SDK
+            index = self.pc.Index(self.index_name)
+
+            # Create vector store from the existing index
+            vectorstore = PineconeVectorStore(
+                index=index,
+                embedding=embedding_function,
+                text_key="text"  # Adjust this field if your schema uses a different key
+            )
+
             with st.spinner("Retrieving relevant information..."):
-                # Using Google embeddings
-                embedding_function = GoogleGenerativeAIEmbeddings(
-                    model="models/embedding-001",
-                    google_api_key=self.api_key
-                )
-                
-                # Retrieve relevant documents from Pinecone using the new SDK
-                index = self.pc.Index(self.index_name)
-                
-                # Create vector store from the existing index
-                vectorstore = PineconeVectorStore(
-                    index=index,
-                    embedding=embedding_function,
-                    text_key="text"  # Adjust this field if your schema uses a different key
-                )
-                
-                # Perform similarity search
+                # Perform similarity search and measure time
+                start_time = time.time()
                 results = vectorstore.similarity_search_with_score(query, k=5)
+                end_time = time.time()
+                vector_db_time = end_time - start_time
+
                 context_text = "\n\n --- \n\n".join([doc.page_content for doc, _score in results])
-                
+
                 # Format the prompt
                 prompt_template = ChatPromptTemplate.from_template(self.prompt_template)
                 prompt = prompt_template.format(context=context_text, question=query)
-                
+
                 # Create the content for Gemini
                 contents = [
                     types.Content(
@@ -123,20 +132,34 @@ class EventAssistantRAGBot:
                         ],
                     ),
                 ]
-            
+
             with st.spinner("Generating response..."):
-                # Generate response using Gemini 2.0 Flash model
+                # Generate response using Gemini 2.0 Flash model and measure time
+                start_time = time.time()
                 response = self.client.models.generate_content(
                     model="gemini-2.0-flash",  # Using Gemini 2.0 Flash model
                     contents=contents,
                 )
-                
-                raw_response = response.text
-                return self.post_process_response(raw_response, query)
-                
-        except Exception as e:
-            return f"An error occurred: {str(e)}"
+                end_time = time.time()
+                llm_time = end_time - start_time
 
+                raw_response = response.text
+                processed_response = self.post_process_response(raw_response, query)
+
+            # Return the processed response and timing information
+            return {
+                "response": processed_response,
+                "vector_db_time": vector_db_time,
+                "llm_time": llm_time
+            }
+
+        except Exception as e:
+            # Return error message and zero times in case of error
+            return {
+                "response": f"An error occurred: {str(e)}",
+                "vector_db_time": 0,
+                "llm_time": 0
+            }
 
 
 # Set page configuration
@@ -236,6 +259,14 @@ div.custom-chat-container {
     border: 1px solid #ccc; /* Optional border */
     padding: 10px;          /* Optional padding */
 }
+/* New style for timing info */
+.timing-info {
+    font-size: 0.8em;
+    color: #555;
+    margin-top: 5px;
+    margin-left: 10px; /* Align with bot message */
+    text-align: left;
+}
 </style>
 """, unsafe_allow_html=True)
 
@@ -271,7 +302,7 @@ if "bot" not in st.session_state:
             pinecone_region=pinecone_region,
             index_name=pinecone_index
         )
-    
+
     # Add welcome message with options
     if not st.session_state.messages:
         welcome_message = """Hello! I'm Event bot.
@@ -284,9 +315,9 @@ I can help you with the following:
 6. Details of lunch at the venue
 
 How can I help you with information about this event?"""
-        
+
         st.session_state.messages.append(
-            {"role": "assistant", "content": welcome_message}
+            {"role": "assistant", "content": welcome_message, "vector_db_time": None, "llm_time": None} # Add timing keys, set to None for welcome message
         )
 
 # Custom Chat UI Implementation - Same as previous example
@@ -307,7 +338,7 @@ for message in st.session_state.messages:
         chat_html += avatar
         # Get the content
         content = message["content"]
-        
+
         # Format differently based on whether it's the welcome message
         if "I can help you with the following:" in content:
             # For the welcome message - Create the HTML directly without f-strings
@@ -315,7 +346,7 @@ for message in st.session_state.messages:
             welcome_html = content
             # First replace the beginning part
             welcome_html = welcome_html.replace(
-                "Hello! I'm Event bot.\nI can help you with the following:", 
+                "Hello! I'm Event bot.\nI can help you with the following:",
                 "Hello! I'm Event bot.<br><br>I can help you with the following:"
             )
             # Then handle numbered list items (using regular strings, not f-strings)
@@ -326,7 +357,7 @@ for message in st.session_state.messages:
             welcome_html = welcome_html.replace('\n5. ', "</li><li style='margin-bottom:4px;'>")
             welcome_html = welcome_html.replace('\n6. ', "</li><li style='margin-bottom:4px;'>")
             welcome_html = welcome_html.replace('\n\nHow can I help you', "</li></ol><br>How can I help you")
-            
+
             # Add to chat HTML without using f-string with the processed content
             chat_html += '<div class="bot-message">' + welcome_html + '</div>'
         else:
@@ -336,6 +367,17 @@ for message in st.session_state.messages:
             formatted_content = escaped_content.replace('\n', '<br>')
             # Add to chat HTML without using f-string for the processed content
             chat_html += '<div class="bot-message">' + formatted_content + '</div>'
+
+            # Add timing information if available
+            if message.get("vector_db_time") is not None and message.get("llm_time") is not None:
+                 timing_html = (
+                    f'<div class="timing-info">'
+                    f'Vector DB time: {message["vector_db_time"]:.2f}s | '
+                    f'LLM time: {message["llm_time"]:.2f}s'
+                    f'</div>'
+                 )
+                 chat_html += timing_html
+
         chat_html += '</div>'
 
 # Close the container div
@@ -350,12 +392,19 @@ user_input = st.chat_input("Ask a question about the event...")
 if user_input:
     # Add user message to chat history
     st.session_state.messages.append({"role": "user", "content": user_input})
-    
-    # Generate response
-    response = st.session_state.bot.answer_question(user_input)
-    
-    # Add assistant response to chat history
-    st.session_state.messages.append({"role": "assistant", "content": response})
-    
+
+    # Generate response, which now returns a dict with response and timings
+    response_data = st.session_state.bot.answer_question(user_input)
+
+    # Add assistant response and timings to chat history
+    st.session_state.messages.append(
+        {
+            "role": "assistant",
+            "content": response_data["response"],
+            "vector_db_time": response_data["vector_db_time"],
+            "llm_time": response_data["llm_time"]
+        }
+    )
+
     # Rerun to update the UI
     st.rerun()
