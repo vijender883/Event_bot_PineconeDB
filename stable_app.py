@@ -3,15 +3,25 @@ import os
 import html
 from google import genai
 from google.genai import types
-from pinecone import Pinecone, ServerlessSpec
+from pinecone import Pinecone, ServerlessSpec # ServerlessSpec not used here, but keep for consistency if needed
 from langchain_pinecone import PineconeVectorStore
 from langchain.prompts import ChatPromptTemplate
 from langchain_google_genai import GoogleGenerativeAIEmbeddings
 import time
 from dotenv import load_dotenv
 
+# --- New Imports for PDF processing ---
+from langchain_community.document_loaders import PyPDFLoader
+from langchain.text_splitter import RecursiveCharacterTextSplitter
+# --- End New Imports ---
+
 # Load environment variables
 load_dotenv()
+
+# --- Directory for submitted resumes ---
+RESUME_DIR = "resume_submitted"
+os.makedirs(RESUME_DIR, exist_ok=True)
+# --- End Directory Creation ---
 
 class EventAssistantRAGBot:
     def __init__(self, api_key, pinecone_api_key, pinecone_cloud, pinecone_region, index_name):
@@ -26,12 +36,20 @@ class EventAssistantRAGBot:
 
         # Initialize Gemini client
         self.client = genai.Client(api_key=self.api_key)
+
+        # --- Initialize Embeddings once ---
+        self.embeddings = GoogleGenerativeAIEmbeddings(
+            model="models/embedding-001",
+            google_api_key=self.api_key
+        )
+        # --- End Embeddings Initialization ---
+
         self.prompt_template = """
-        You are a friendly Event Information Assistant. Your primary purpose is to answer questions about the event described in the provided context. Follow these guidelines:
+        You are a friendly Event Information Assistant. Your primary purpose is to answer questions about the event described in the provided context. You can also answer questions based on user-submitted resumes if they have been provided. Follow these guidelines:
 
         1. You can respond to basic greetings like "hi", "hello", or "how are you" in a warm, welcoming manner
-        2. For event information, only provide details that are present in the context
-        3. If information is not in the context, politely say "I'm sorry, I don't have that specific information about the event"
+        2. For event information or resume content, only provide details that are present in the context
+        3. If information is not in the context, politely say "I'm sorry, I don't have that specific information" (for event) or "I'm sorry, I don't have that information from the resume" (for resume).
         4. Keep responses concise but conversational
         5. Do not make assumptions beyond what's explicitly stated in the context
         6. Always prioritize factual accuracy while maintaining a helpful tone
@@ -42,31 +60,24 @@ class EventAssistantRAGBot:
         11. You should refer to yourself as "Event Bot"
         12. You should not greet if the user has not greeted to you
 
-        Remember: While you can be conversational, your primary role is providing accurate information about this specific event based on the context provided.
+        Remember: While you can be conversational, your primary role is providing accurate information based on the context provided (event documents and submitted resumes).
 
-        Context information about the event:
+        Context information (event details and/or resume content):
         {context}
         --------
 
-        Now, please answer this question about the event: {question}
+        Now, please answer this question: {question}
         """
 
 
     def post_process_response(self, response, query):
         """Format responses for better readability based on query type."""
-        # If it's a lunch-related query, format the response
         if "lunch" in query.lower() or "food" in query.lower() or "eat" in query.lower():
-            # Just start with "Regarding lunch:" without the greeting
             formatted = "Regarding lunch:\n\n"
-
-            # Split into readable bullet points
             points = []
-
-            # Extract key information using common phrases and format as separate points
             if "provided to all" in response:
                 points.append("• Lunch will be provided to all participants who have checked in at the venue.")
             if "cafeteria" in response.lower() and "floor" in response.lower():
-                # Extract time info if available
                 time_info = ""
                 if "1:00" in response and "2:00" in response:
                     time_info = "between 1:00 PM and 2:00 PM IST"
@@ -75,16 +86,47 @@ class EventAssistantRAGBot:
                 points.append("• Please ensure you've completed the check-in process at the registration desk to be eligible.")
             if "volunteer" in response.lower() or "direction" in response.lower():
                 points.append("• Feel free to ask a volunteer if you need directions to the cafeteria.")
-
-            # If we couldn't extract structured points, just use the original
-            if not points:
-                return response
-
-            # Combine all points with line breaks
+            if not points: return response
             return formatted + "\n".join(points)
-
-        # For other responses, just return the original
         return response
+
+    # --- New method to process and embed resume ---
+    def add_resume_to_vectorstore(self, pdf_file_path):
+        """
+        Loads a PDF resume, splits it into chunks, embeds them, and upserts to Pinecone.
+        """
+        try:
+            # Load PDF
+            loader = PyPDFLoader(pdf_file_path)
+            documents = loader.load()
+            if not documents:
+                st.warning(f"No content extracted from the PDF: {os.path.basename(pdf_file_path)}")
+                return False
+
+            # Split documents (using same parameters as extract_data.py)
+            text_splitter = RecursiveCharacterTextSplitter(chunk_size=2000, chunk_overlap=800)
+            docs = text_splitter.split_documents(documents)
+            if not docs:
+                st.warning(f"No text chunks created after splitting the resume: {os.path.basename(pdf_file_path)}")
+                return False
+            
+            # st.sidebar.write(f"Embedding {len(docs)} chunks from {os.path.basename(pdf_file_path)}...")
+
+            # Upsert to Pinecone
+            # PineconeVectorStore.from_documents handles the upsertion to the specified index.
+            # It uses the globally configured Pinecone client (via self.pc initialization)
+            PineconeVectorStore.from_documents(
+                documents=docs,
+                embedding=self.embeddings,  # Use the class's initialized embeddings
+                index_name=self.index_name
+                # text_key defaults to "text", ensure consistency with extract_data.py
+            )
+            # st.sidebar.write(f"Successfully added {len(docs)} resume chunks to Pinecone.")
+            return True
+        except Exception as e:
+            st.error(f"Error processing and embedding resume '{os.path.basename(pdf_file_path)}': {e}")
+            return False
+    # --- End new method ---
 
     def answer_question(self, query):
         """Use RAG with Google Gemini to answer a question based on retrieved context,
@@ -92,62 +134,52 @@ class EventAssistantRAGBot:
         vector_db_time = 0
         llm_time = 0
         raw_response = ""
-        processed_response_text = "" # Initialize processed response text
+        processed_response_text = "" 
 
         try:
-            # Using Google embeddings
-            embedding_function = GoogleGenerativeAIEmbeddings(
-                model="models/embedding-001",
-                google_api_key=self.api_key
-            )
+            # Use the class's initialized embedding model
+            embedding_function = self.embeddings
 
-            # Retrieve relevant documents from Pinecone using the new SDK
+            # Retrieve relevant documents from Pinecone
             index = self.pc.Index(self.index_name)
 
             # Create vector store from the existing index
             vectorstore = PineconeVectorStore(
                 index=index,
                 embedding=embedding_function,
-                text_key="text"  # Adjust this field if your schema uses a different key
+                text_key="text"
             )
 
             with st.spinner("Retrieving relevant information..."):
-                # Perform similarity search and measure time
                 start_time = time.time()
-                results = vectorstore.similarity_search_with_score(query, k=5)
+                results = vectorstore.similarity_search_with_score(query, k=5) # k=5, can be tuned
                 end_time = time.time()
                 vector_db_time = end_time - start_time
 
                 context_text = "\n\n --- \n\n".join([doc.page_content for doc, _score in results])
+                if not context_text and results: # If results found but context_text is empty (e.g. empty page_content)
+                    context_text = "No specific details found in the documents for your query."
+                elif not results:
+                     context_text = "No information found in the knowledge base for your query."
 
-                # Format the prompt
-                prompt_template = ChatPromptTemplate.from_template(self.prompt_template)
-                prompt = prompt_template.format(context=context_text, question=query)
 
-                # Create the content for Gemini
-                contents = [
-                    types.Content(
-                        role="user",
-                        parts=[
-                            types.Part.from_text(text=prompt),
-                        ],
-                    ),
-                ]
+                prompt_template_obj = ChatPromptTemplate.from_template(self.prompt_template)
+                prompt = prompt_template_obj.format(context=context_text, question=query)
+
+                contents = [types.Content(role="user", parts=[types.Part.from_text(text=prompt)])]
 
             with st.spinner("Generating response..."):
-                # Generate response using Gemini 2.0 Flash model and measure time
                 start_time = time.time()
-                response = self.client.models.generate_content(
+                response_genai = self.client.models.generate_content(
                     model="gemini-2.0-flash",  # Using Gemini 2.0 Flash model
                     contents=contents,
                 )
                 end_time = time.time()
                 llm_time = end_time - start_time
-
-                raw_response = response.text
+                
+                raw_response = response_genai.text
                 processed_response_text = self.post_process_response(raw_response, query)
 
-            # Return a dictionary including the text and timing information
             return {
                 "text": processed_response_text,
                 "vector_db_time": vector_db_time,
@@ -155,9 +187,13 @@ class EventAssistantRAGBot:
             }
 
         except Exception as e:
-            # Return error message and zero times in case of error
+            # Check for specific API errors if needed, e.g. permission denied for model
+            error_message = f"An error occurred: {str(e)}"
+            if "permission" in str(e).lower() and "model" in str(e).lower():
+                error_message += "\nPlease ensure the API key has permissions for the 'gemini-1.5-flash-latest' model."
+            
             return {
-                "text": f"An error occurred: {str(e)}",
+                "text": error_message,
                 "vector_db_time": vector_db_time,
                 "llm_time": llm_time
             }
@@ -170,7 +206,7 @@ st.set_page_config(
     layout="centered"
 )
 
-# Load the CSS, matching the styles from the Chroma version
+# Load the CSS
 st.markdown("""
 <style>
 /* Bot message formatting */
@@ -188,94 +224,18 @@ st.markdown("""
     display: flex !important; /* Use flexbox */
     flex-direction: column !important; /* Stack content and timings */
 }
-
-.bot-message ol {
-    margin-top: 8px !important;
-    margin-bottom: 8px !important;
-    padding-left: 25px !important;
-}
-
-.bot-message li {
-    margin-bottom: 6px !important;
-    padding-bottom: 0 !important;
-    line-height: 1.4 !important;
-}
-
-.bot-message p {
-    margin-bottom: 10px !important;
-}
-
-.bot-message-content {
-    /* Styles for the main text content */
-    flex-grow: 1 !important; /* Allows content to take available space */
-    margin-bottom: 5px !important; /* Space between content and timings */
-    line-height: 1.5 !important;
-    white-space: pre-line !important;
-}
-
-
-/* Chat container and message styles */
-.custom-chat-container {
-    display: flex !important;
-    flex-direction: column !important;
-    gap: 10px !important;
-    margin-bottom: 20px !important;
-    max-width: 800px !important;
-    background-color: white !important;
-}
-
-.message-container {
-    display: flex !important;
-    align-items: flex-start !important;
-    margin-bottom: 10px !important;
-    background-color: white !important; /* White background, same as container */
-    color: black !important;
-}
-
-.message-container.user {
-    flex-direction: row-reverse !important;
-}
-
-.avatar-icon {
-    width: 36px !important;
-    height: 36px !important;
-    border-radius: 50% !important;
-    background-color: #E8F0FE !important;
-    display: flex !important;
-    justify-content: center !important;
-    align-items: center !important;
-    font-size: 20px !important;
-    margin: 0 10px !important;
-    flex-shrink: 0 !important;
-}
-
-.user-avatar-icon {
-    background-color: #F0F2F5 !important;
-}
-
-.user-message {
-    background-color: #F0F2F5 !important;
-    padding: 10px 15px !important;
-    border-radius: 18px !important;
-    max-width: 80% !important;
-    margin-right: 10px !important;
-    word-wrap: break-word !important;
-}
-
-
-.bot-message-timings {
-    font-size: 0.75em !important; /* Smaller font */
-    color: #555 !important; /* Darker gray */
-    margin-top: 5px !important; /* Add spacing */
-    display: block !important; /* Ensure it's on its own line */
-    align-self: flex-end !important; /* Align timings to the right */
-}
-
-div.custom-chat-container {
-    border-radius: 15px;
-    border: 1px solid #ccc; /* Optional border */
-    padding: 10px;          /* Optional padding */
-}
+.bot-message ol { margin-top: 8px !important; margin-bottom: 8px !important; padding-left: 25px !important; }
+.bot-message li { margin-bottom: 6px !important; padding-bottom: 0 !important; line-height: 1.4 !important; }
+.bot-message p { margin-bottom: 10px !important; }
+.bot-message-content { flex-grow: 1 !important; margin-bottom: 5px !important; line-height: 1.5 !important; white-space: pre-line !important; }
+.custom-chat-container { display: flex !important; flex-direction: column !important; gap: 10px !important; margin-bottom: 20px !important; max-width: 800px !important; background-color: white !important; }
+.message-container { display: flex !important; align-items: flex-start !important; margin-bottom: 10px !important; background-color: white !important; color: black !important; }
+.message-container.user { flex-direction: row-reverse !important; }
+.avatar-icon { width: 36px !important; height: 36px !important; border-radius: 50% !important; background-color: #E8F0FE !important; display: flex !important; justify-content: center !important; align-items: center !important; font-size: 20px !important; margin: 0 10px !important; flex-shrink: 0 !important; }
+.user-avatar-icon { background-color: #F0F2F5 !important; }
+.user-message { background-color: #F0F2F5 !important; padding: 10px 15px !important; border-radius: 18px !important; max-width: 80% !important; margin-right: 10px !important; word-wrap: break-word !important; }
+.bot-message-timings { font-size: 0.75em !important; color: #555 !important; margin-top: 5px !important; display: block !important; align-self: flex-end !important; }
+div.custom-chat-container { border-radius: 15px; border: 1px solid #ccc; padding: 10px; }
 </style>
 """, unsafe_allow_html=True)
 
@@ -285,6 +245,8 @@ st.title("Build with AI - RAG Event Bot")
 # Initialize session state for chat history
 if "messages" not in st.session_state:
     st.session_state.messages = []
+if "processed_file_id" not in st.session_state: # For tracking processed resume
+    st.session_state.processed_file_id = None
 
 # Get API keys from environment variables
 api_key = os.getenv("GEMINI_API_KEY")
@@ -294,11 +256,10 @@ pinecone_region = os.getenv("PINECONE_REGION", "us-east-1")
 pinecone_index = os.getenv("PINECONE_INDEX")
 
 if not api_key:
-    st.error("API key not found in .env file. Please add GEMINI_API_KEY to your .env file.")
+    st.error("GEMINI_API_KEY not found. Please set it in your environment variables or .env file.")
     st.stop()
-
 if not pinecone_api_key or not pinecone_index:
-    st.error("Pinecone credentials not found in .env file. Please add PINECONE_API_KEY and PINECONE_INDEX to your .env file.")
+    st.error("PINECONE_API_KEY or PINECONE_INDEX not found. Please set them in your environment or .env file.")
     st.stop()
 
 # Initialize the bot
@@ -311,8 +272,7 @@ if "bot" not in st.session_state:
             pinecone_region=pinecone_region,
             index_name=pinecone_index
         )
-
-    # Add welcome message with options - Store as a dictionary like in Chroma version
+    # Add welcome message if no messages yet
     if not st.session_state.messages:
         welcome_message_text = """Hello! I'm Event bot.
 I can help you with the following:
@@ -322,95 +282,101 @@ I can help you with the following:
 4. Presentation of Interesting projects in AI, ML
 5. Locating the washrooms
 6. Details of lunch at the venue
+7. Information from your uploaded resume (if you provide one via the sidebar).
 
 How can I help you with information about this event?"""
-
-        # Store welcome message as a dictionary with None for timings
         st.session_state.messages.append(
             {"role": "assistant", "content": {"text": welcome_message_text, "vector_db_time": None, "llm_time": None}}
         )
 
-# Custom Chat UI Implementation - Matching Chroma version
-chat_html = '<div class="custom-chat-container">'
+# --- Resume Upload Section in Sidebar ---
+with st.sidebar:
+    st.header("Submit Your Resume")
+    st.markdown("Upload your resume in PDF format. I can then answer questions based on its content.")
+    uploaded_resume = st.file_uploader("Upload PDF", type="pdf", key="pdf_resume_uploader")
 
-# Add all messages to the custom chat HTML
+    if uploaded_resume is not None:
+        current_file_id = f"{uploaded_resume.name}_{uploaded_resume.size}"
+
+        if st.session_state.processed_file_id != current_file_id:
+            st.sidebar.info(f"New resume detected: '{uploaded_resume.name}'.")
+            file_path = os.path.join(RESUME_DIR, uploaded_resume.name)
+            
+            # Save the uploaded file
+            with open(file_path, "wb") as f:
+                f.write(uploaded_resume.getbuffer())
+            st.sidebar.write(f"Resume '{uploaded_resume.name}' saved to server.")
+
+            # Process and embed the resume
+            with st.spinner(f"Processing '{uploaded_resume.name}'..."):
+                bot_instance = st.session_state.get("bot")
+                if bot_instance:
+                    success = bot_instance.add_resume_to_vectorstore(file_path)
+                    if success:
+                        st.sidebar.success(f"Resume '{uploaded_resume.name}' processed and added to knowledge base!")
+                        st.session_state.processed_file_id = current_file_id # Mark as processed
+                    else:
+                        st.sidebar.error(f"Failed to process '{uploaded_resume.name}'.")
+                        # Optionally allow re-processing by clearing the ID
+                        # st.session_state.processed_file_id = None 
+                else:
+                    st.sidebar.error("Bot not initialized. Cannot process resume.")
+        # else:
+            # st.sidebar.info(f"Resume '{uploaded_resume.name}' was already processed in this session.")
+# --- End Resume Upload Section ---
+
+
+# Custom Chat UI Implementation
+chat_html = '<div class="custom-chat-container">'
 for message in st.session_state.messages:
     if message["role"] == "user":
         avatar = '<div class="avatar-icon user-avatar-icon">👤</div>'
-        chat_html += f'<div class="message-container user">'
-        chat_html += avatar
-        # User messages are simple text
-        chat_html += f'<div class="user-message">{html.escape(message["content"])}</div>'
-        chat_html += '</div>'
+        chat_html += f'<div class="message-container user">{avatar}<div class="user-message">{html.escape(message["content"])}</div></div>'
     else:  # assistant
         avatar = '<div class="avatar-icon">🤖</div>'
-        # We apply the bot-message class to the INNER div, which contains content and timings
-        chat_html += f'<div class="message-container">'
-        chat_html += avatar
-
-        # Access the content dictionary
         content_dict = message["content"]
         content_text = content_dict["text"]
         vector_db_time = content_dict.get("vector_db_time")
         llm_time = content_dict.get("llm_time")
 
-        # Start the inner bot message div that holds both content and timings
-        chat_html += '<div class="bot-message">'
-
-        # Format message content - Special handling for the welcome message
-        # Check if it's the welcome message by checking for the list items
-        if "I can help you with the following:" in content_text and "1." in content_text:
-             # For the welcome message - Use the existing welcome_html logic
-            # Note: Escaping is not done here for the welcome message's structured HTML parts
+        chat_html += f'<div class="message-container">{avatar}<div class="bot-message">'
+        
+        # Format message content (welcome message special handling)
+        if "I can help you with the following:" in content_text and "1." in content_text and "Hello! I'm Event bot." in content_text :
             welcome_html = content_text.replace(
                 "Hello! I'm Event bot.\nI can help you with the following:",
                 "Hello! I'm Event bot.<br><br>I can help you with the following:"
             )
-            welcome_html = welcome_html.replace('\n1. ', "<ol style='margin-top:8px;margin-bottom:8px;padding-left:25px;'><li style='margin-bottom:4px;'>")
-            welcome_html = welcome_html.replace('\n2. ', "</li><li style='margin-bottom:4px;'>")
-            welcome_html = welcome_html.replace('\n3. ', "</li><li style='margin-bottom:4px;'>")
-            welcome_html = welcome_html.replace('\n4. ', "</li><li style='margin-bottom:4px;'>")
-            welcome_html = welcome_html.replace('\n5. ', "</li><li style='margin-bottom:4px;'>")
-            welcome_html = welcome_html.replace('\n6. ', "</li><li style='margin-bottom:4px;'>")
-            welcome_html = welcome_html.replace('\n\nHow can I help you', "</li></ol><br>How can I help you")
+            # Dynamically create list items for robustness
+            import re
+            # Match numbered list items like "1. Text" or "\n1. Text"
+            welcome_html = re.sub(r"(\n)?([1-9]\d*)\. (.*?)(?=(\n[1-9]\d*\. )|\n\n|$)", 
+                                  lambda m: f"</li><li style='margin-bottom:4px;'>{m.group(3).strip()}" if m.group(1) or m.start() > 0 else f"<ol style='margin-top:8px;margin-bottom:8px;padding-left:25px;'><li style='margin-bottom:4px;'>{m.group(3).strip()}", 
+                                  welcome_html, flags=re.DOTALL)
+            # Close the ol tag if it was opened
+            if "<ol" in welcome_html and "</ol>" not in welcome_html:
+                 welcome_html += "</li></ol>"
+            welcome_html = welcome_html.replace("How can I help you", "<br>How can I help you")
 
-            chat_html += '<div class="bot-message-content">' + welcome_html + '</div>'
-
+            chat_html += f'<div class="bot-message-content">{welcome_html}</div>'
         else:
-            # For regular messages - escape and format text content
             escaped_content = html.escape(content_text)
             formatted_content = escaped_content.replace('\n', '<br>')
-
             chat_html += f'<div class="bot-message-content">{formatted_content}</div>'
 
-        # Add timings if available (not for the welcome message which has None)
         if vector_db_time is not None and llm_time is not None:
              timings_html = f'<span class="bot-message-timings">Vector DB: {vector_db_time:.2f}s | LLM: {llm_time:.2f}s</span>'
              chat_html += timings_html
+        chat_html += '</div></div>' # Closes bot-message and message-container
 
-        # Close the inner bot message div
-        chat_html += '</div>' # Closes bot-message
-
-        chat_html += '</div>' # Closes message-container
-
-# Close the container div
 chat_html += '</div>'
-
-# Render the custom chat container
 st.markdown(chat_html, unsafe_allow_html=True)
 
 # Chat input
-user_input = st.chat_input("Ask a question about the event...")
+user_input = st.chat_input("Ask a question about the event or your resume...")
 
 if user_input:
-    # Add user message to chat history
     st.session_state.messages.append({"role": "user", "content": user_input})
-
-    # Generate response (this now returns a dict)
     response_dict = st.session_state.bot.answer_question(user_input)
-
-    # Add assistant response (the dict) to chat history
     st.session_state.messages.append({"role": "assistant", "content": response_dict})
-
-    # Rerun to update the UI
     st.rerun()
