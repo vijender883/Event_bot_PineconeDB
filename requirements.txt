@@ -9,5 +9,6 @@ langchain-text-splitters>=0.3.8
 langchain-google-genai>=2.1.4
 langchain-pinecone>=0.2.6
 google-ai-generativelanguage>=0.6.18
+google-generativeai
 streamlit>=1.45.0
 pypdf>=5.5.0
