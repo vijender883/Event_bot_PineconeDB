@@ -9,3 +9,4 @@ langchain-google-genai
 langchain-pinecone
 google-generativeai
 pypdf
+google-genai>=1.14.0 
