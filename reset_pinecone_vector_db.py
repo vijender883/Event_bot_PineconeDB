@@ -164,7 +164,15 @@ if event_chunks:
         print(f"Successfully uploaded {len(event_chunks)} event document chunks.")
     except Exception as e:
         print(f"Error during upserting event documents to Pinecone: {e}")
-
+try:
+    with open(PROCESSED_HASHES_FILE, 'w') as f:
+      # Opening the file in 'w' (write) mode truncates it if it exists
+      pass  # No need to write anything to make it empty
+    print(f"Successfully emptied the file: {PROCESSED_HASHES_FILE}")
+except FileNotFoundError:
+    print(f"Error: File not found at {PROCESSED_HASHES_FILE}")
+except Exception as e:
+    print(f"An error occurred: {e}")
 
 # --- Process Resume Documents ---
 print(f"\n--- Processing Resume Documents from '{RESUME_DIR}' ---")
