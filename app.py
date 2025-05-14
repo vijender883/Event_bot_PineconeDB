@@ -198,7 +198,6 @@ class EventAssistantRAGBot:
                 st.sidebar.warning(f"No content extracted from '{file_name}' for splitting.")
                 return False
 
-            # 2. Split documents (using consistent parameters from resume_processor.py)
             text_splitter = RecursiveCharacterTextSplitter(chunk_size=2000, chunk_overlap=800)
             docs = text_splitter.split_documents(documents)
             if not docs:
