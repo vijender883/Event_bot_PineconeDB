@@ -628,37 +628,47 @@ with st.sidebar:
                         # Multiple users found, show dropdown to select
                         st.write(f"Found {len(user_data)} users with similar names. Please select your name:")
                         
-                        # Create options for the dropdown
-                        options = [f"{user.get('name')}" + (f" ({user.get('additional_details')})" if user.get('additional_details') else "") for user in user_data]
-                        
-                        # Show the dropdown and get the selected index
-                        selected_option = st.selectbox("Select your name:", options, key="user_select")
-                        
-                        if st.button("Confirm Check-in", key="confirm_checkin"):
-                            # Find the selected user data
-                            selected_index = options.index(selected_option)
-                            selected_user = user_data[selected_index]
-                            user_id = selected_user.get("_id")
-                            
-                            # Perform check-in for the selected user
-                            if perform_checkin(user_id):
-                                st.session_state.checked_in = True
-                                st.session_state.checkin_message = selected_option
-                                st.session_state.checkin_status = "success"
-                                st.session_state.selected_user_id = user_id
-                                st.success(f"✅ Successfully checked in: {selected_option}")
-                            else:
-                                st.error("Failed to update check-in status. Please try again.")
+                        # Store the user data in session state so it persists
+                        st.session_state.multiple_users_found = True
+                        st.session_state.multiple_user_data = user_data
+                
                 else:
                     # User not found in registration list
                     st.error(f"❌ {message}")
                     st.session_state.checkin_status = "error"
+        
+        # Display the dropdown and confirm button if multiple users were found
+        if st.session_state.get('multiple_users_found', False):
+            user_data = st.session_state.multiple_user_data
+            
+            # Create options for the dropdown
+            options = [f"{user.get('name')}" + (f" ({user.get('additional_details')})" if user.get('additional_details') else "") for user in user_data]
+            
+            # Show the dropdown and get the selected index
+            selected_option = st.selectbox("Select your name:", options, key="user_select")
+            
+            if st.button("Confirm Check-in", key="confirm_checkin"):
+                # Find the selected user data
+                selected_index = options.index(selected_option)
+                selected_user = user_data[selected_index]
+                user_id = selected_user.get("_id")
+                
+                # Perform check-in for the selected user
+                if perform_checkin(user_id):
+                    st.session_state.checked_in = True
+                    st.session_state.checkin_message = selected_option
+                    st.session_state.checkin_status = "success"
+                    st.session_state.selected_user_id = user_id
+                    # Clear the multiple users found flag
+                    st.session_state.multiple_users_found = False
+                    st.success(f"✅ Successfully checked in: {selected_option}")
+                else:
+                    st.error("Failed to update check-in status. Please try again.")
 
     # Add a separator between check-in and resume upload
     st.markdown("---")
     
 # --- End Check-in Feature ---
-
 # --- Resume Upload Section in Sidebar ---
 with st.sidebar:
     st.header("Submit Your Resume")
