@@ -15,9 +15,6 @@ from botocore.exceptions import NoCredentialsError, PartialCredentialsError, Cli
 # --- New Imports for PDF processing ---
 from langchain_community.document_loaders import PyPDFLoader
 from langchain.text_splitter import RecursiveCharacterTextSplitter
-# --- New Imports for Check-In Feature ---
-import requests
-import json
 # --- End New Imports ---
 
 # Load environment variables
@@ -27,93 +24,6 @@ load_dotenv()
 RESUME_DIR = "resume_submitted"
 os.makedirs(RESUME_DIR, exist_ok=True)
 # --- End Directory and Hash File Creation ---
-
-# --- New function for Check-In Feature ---
-def check_registered_user(name):
-    """
-    Check if a user is registered for the event by calling the API.
-    
-    Args:
-        name (str): The name to check against the registration list.
-        
-    Returns:
-        tuple: (success (bool), message (str), data (list))
-    """
-    api_url = "https://api.practicalsystemdesign.com/api/eventbot/getRegisteredUserList"
-    
-    try:
-        # Prepare request payload
-        payload = {
-            "name": name
-        }
-        
-        # Make POST request to the API
-        response = requests.post(api_url, json=payload)
-        
-        # Check if the request was successful
-        if response.status_code == 200 or response.status_code == 201:
-            response_data = response.json()
-            
-            # Check if the API returned success
-            if response_data.get("success", False):
-                # Get the count and data from the response
-                count = response_data.get("count", 0)
-                data = response_data.get("data", [])
-                
-                if count == 0 or not data:
-                    return False, "No registered user found with that name.", []
-                
-                return True, f"Found {count} registered user(s).", data
-            else:
-                return False, "API returned an unsuccessful response.", []
-                
-        else:
-            return False, f"API request failed with status code {response.status_code}.", []
-            
-    except requests.exceptions.RequestException as e:
-        return False, f"Failed to connect to the registration API: {str(e)}", []
-    except json.JSONDecodeError as e:
-        return False, f"Failed to parse API response: {str(e)}", []
-    except Exception as e:
-        return False, f"An unexpected error occurred: {str(e)}", []
-
-def perform_checkin(user_id):
-    """
-    Perform the check-in operation for a user by calling the check-in API.
-    
-    Args:
-        user_id (str): The ID of the user to check in.
-        
-    Returns:
-        tuple: (success (bool), message (str))
-    """
-    api_url = "https://api.practicalsystemdesign.com/api/eventbot/checkinUser"
-    
-    try:
-        # Make the API request with the user ID
-        response = requests.post(
-            api_url,
-            json={"userId": user_id},
-            headers={"Content-Type": "application/json"}
-        )
-        
-        # Parse the response
-        response_data = response.json()
-        
-        # Check if the request was successful
-        if response.status_code == 200 and response_data.get("success", False):
-            return True, response_data.get("message", "Successfully checked in")
-        else:
-            error_message = response_data.get("message", f"API returned status code {response.status_code}")
-            return False, error_message
-            
-    except requests.exceptions.RequestException as e:
-        return False, f"Failed to connect to the check-in API: {str(e)}"
-    except json.JSONDecodeError as e:
-        return False, f"Failed to parse API response: {str(e)}"
-    except Exception as e:
-        return False, f"An unexpected error occurred during check-in: {str(e)}"
-# --- End New functions for Check-In Feature ---
 
 class EventAssistantRAGBot:
     def __init__(self, api_key, pinecone_api_key, pinecone_cloud, pinecone_region, index_name, bucket_name, aws_access_key_id, aws_secret_access_key, region_name):
@@ -196,7 +106,7 @@ class EventAssistantRAGBot:
         11. You should refer to yourself as "Event Bot"
         12. You should not greet if the user has not greeted to you
 
-        Remember: While you can be conversational, your primary role is providing accurate information based on the context provided (event details and/or resume content).
+        Remember: While you can be conversational, your primary role is providing accurate information based on the context provided (event documents and submitted resumes).
 
         Context information (event details and/or resume content):
         {context}
@@ -269,6 +179,8 @@ class EventAssistantRAGBot:
             return None
     
 
+
+    # --- Method to process and embed resume (Enhanced) ---
     def process_and_embed_resume(self, pdf_file_path):
         """
         Loads a PDF resume from the given path, splits it, adds metadata,
@@ -322,6 +234,7 @@ class EventAssistantRAGBot:
             import traceback
             traceback.print_exc()
             return False
+    # --- End enhanced method ---
 
 
     def post_process_response(self, response, query):
@@ -351,7 +264,6 @@ class EventAssistantRAGBot:
 
         # Default: return original response
         return response
-
 
     def answer_question(self, query):
         """Use RAG with Google Gemini to answer a question based on retrieved context,
@@ -434,10 +346,9 @@ class EventAssistantRAGBot:
                 "vector_db_time": vector_db_time,
                 "llm_time": llm_time
             }
+        
 
-
-
-
+        
 # Set page configuration
 st.set_page_config(
     page_title="Build with AI - RAG Event Bot",
@@ -475,22 +386,6 @@ st.markdown("""
 .user-message { background-color: #F0F2F5 !important; padding: 10px 15px !important; border-radius: 18px !important; max-width: 80% !important; margin-right: 10px !important; word-wrap: break-word !important; }
 .bot-message-timings { font-size: 0.75em !important; color: #555 !important; margin-top: 5px !important; display: block !important; align-self: flex-end !important; }
 div.custom-chat-container { border-radius: 15px; border: 1px solid #ccc; padding: 10px; }
-.success-message { 
-    background-color: #d4edda !important;
-    color: #155724 !important;
-    padding: 10px !important;
-    border-radius: 5px !important;
-    margin: 10px 0 !important;
-    border: 1px solid #c3e6cb !important;
-}
-.error-message { 
-    background-color: #f8d7da !important;
-    color: #721c24 !important;
-    padding: 10px !important;
-    border-radius: 5px !important;
-    margin: 10px 0 !important;
-    border: 1px solid #f5c6cb !important;
-}
 </style>
 """, unsafe_allow_html=True)
 
@@ -502,15 +397,6 @@ if "messages" not in st.session_state:
     st.session_state.messages = []
 if "last_processed_upload_key" not in st.session_state:
     st.session_state.last_processed_upload_key = None
-# Initialize check-in related session state variables
-if "checked_in" not in st.session_state:
-    st.session_state.checked_in = False
-if "checkin_message" not in st.session_state:
-    st.session_state.checkin_message = ""
-if "checkin_status" not in st.session_state:
-    st.session_state.checkin_status = ""
-if "selected_user_id" not in st.session_state:
-    st.session_state.selected_user_id = None
 
 
 # Get API keys and configurations from environment variables
@@ -585,79 +471,6 @@ How can I help you with information about this event?"""
             traceback.print_exc()
             st.stop() # Stop the app if initialization fails
 
-
-# --- Check-in Feature in Sidebar ---
-with st.sidebar:
-    st.header("Event Check-in")
-    
-    # Check if user is already checked in
-    if st.session_state.checked_in:
-        st.success(f"✅ Successfully checked in: {st.session_state.checkin_message}")
-    else:
-        # Input field for name
-        name_input = st.text_input("Enter your name to check in:", key="checkin_name")
-        
-        # Process the name for check-in when user submits
-        if st.button("Check-in", key="checkin_button"):
-            if not name_input:
-                st.error("Please enter your name to check in.")
-            else:
-                # Call the function to check if user is registered
-                with st.spinner("Checking registration..."):
-                    success, message, user_data = check_registered_user(name_input)
-                
-                if success:
-                    # User(s) found in registration list
-                    if len(user_data) == 1:
-                        # Only one user found, proceed with check-in
-                        user = user_data[0]
-                        user_id = user.get("_id")
-                        name = user.get("name")
-                        additional_details = user.get("additional_details", "")
-                        
-                        # Perform check-in
-                        if perform_checkin(user_id):
-                            st.session_state.checked_in = True
-                            st.session_state.checkin_message = f"{name}" + (f" ({additional_details})" if additional_details else "")
-                            st.session_state.checkin_status = "success"
-                            st.session_state.selected_user_id = user_id
-                            st.success(f"✅ Successfully checked in: {st.session_state.checkin_message}")
-                        else:
-                            st.error("Failed to update check-in status. Please try again.")
-                    else:
-                        # Multiple users found, show dropdown to select
-                        st.write(f"Found {len(user_data)} users with similar names. Please select your name:")
-                        
-                        # Create options for the dropdown
-                        options = [f"{user.get('name')}" + (f" ({user.get('additional_details')})" if user.get('additional_details') else "") for user in user_data]
-                        
-                        # Show the dropdown and get the selected index
-                        selected_option = st.selectbox("Select your name:", options, key="user_select")
-                        
-                        if st.button("Confirm Check-in", key="confirm_checkin"):
-                            # Find the selected user data
-                            selected_index = options.index(selected_option)
-                            selected_user = user_data[selected_index]
-                            user_id = selected_user.get("_id")
-                            
-                            # Perform check-in for the selected user
-                            if perform_checkin(user_id):
-                                st.session_state.checked_in = True
-                                st.session_state.checkin_message = selected_option
-                                st.session_state.checkin_status = "success"
-                                st.session_state.selected_user_id = user_id
-                                st.success(f"✅ Successfully checked in: {selected_option}")
-                            else:
-                                st.error("Failed to update check-in status. Please try again.")
-                else:
-                    # User not found in registration list
-                    st.error(f"❌ {message}")
-                    st.session_state.checkin_status = "error"
-
-    # Add a separator between check-in and resume upload
-    st.markdown("---")
-    
-# --- End Check-in Feature ---
 
 # --- Resume Upload Section in Sidebar ---
 with st.sidebar:
