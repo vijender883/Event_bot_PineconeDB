@@ -9,6 +9,7 @@ from langchain_pinecone import PineconeVectorStore
 from langchain.prompts import ChatPromptTemplate
 from langchain_google_genai import GoogleGenerativeAIEmbeddings
 import time
+from datetime import datetime
 from dotenv import load_dotenv
 import boto3
 from botocore.exceptions import NoCredentialsError, PartialCredentialsError, ClientError
@@ -18,6 +19,8 @@ from langchain.text_splitter import RecursiveCharacterTextSplitter
 # --- New Imports for Check-In Feature ---
 import requests
 import json
+# Dynamically create list items for robustness
+import re
 # --- End New Imports ---
 
 # Load environment variables
@@ -101,7 +104,7 @@ def perform_checkin(user_id):
         response_data = response.json()
         
         # Check if the request was successful
-        if response.status_code == 200 and response_data.get("success", False):
+        if (response.status_code == 200 or response.status_code == 201) and response_data.get("success", False):
             return True, response_data.get("message", "Successfully checked in")
         else:
             error_message = response_data.get("message", f"API returned status code {response.status_code}")
@@ -113,7 +116,146 @@ def perform_checkin(user_id):
         return False, f"Failed to parse API response: {str(e)}"
     except Exception as e:
         return False, f"An unexpected error occurred during check-in: {str(e)}"
+
 # --- End New functions for Check-In Feature ---
+def fetch_past_messages(user_id):
+    """
+    Fetch past messages for a user from the API.
+    
+    Args:
+        user_id (str): The ID of the user whose messages to fetch.
+        
+    Returns:
+        list: A list of message dictionaries in the order provided by the API, or an empty list if the request fails.
+    """
+    api_url = "https://api.practicalsystemdesign.com/api/eventbot/chat/list"
+    
+    try:
+        # Prepare request payload
+        payload = {
+            "userId": user_id
+        }
+        
+        # Make POST request to the API
+        response = requests.post(api_url, json=payload)
+        
+        # Check if the request was successful
+        if response.status_code == 200:
+            response_data = response.json()
+            
+            # Check if the API returned success
+            if response_data.get("success", False):
+                messages = []
+                
+                # Navigate to the chats array in the new structure
+                chats = response_data.get("data", {}).get("chats", [])
+                
+                # Process each chat message
+                for chat in chats:
+                    role = chat.get("message_source")
+                    content = chat.get("message")
+                    
+                    # For assistant messages, wrap content in the expected format
+                    if role == "assistant":
+                        messages.append({
+                            "role": role,
+                            "content": {
+                                "text": content,
+                                "vector_db_time": None,  # We don't have this from stored messages
+                                "llm_time": None        # We don't have this from stored messages
+                            }
+                        })
+                    else:
+                        # For user messages, keep content as a string
+                        messages.append({
+                            "role": role,
+                            "content": content
+                        })
+                return messages
+            else:
+                print(f"API returned unsuccessful response: {response_data.get('message', 'Unknown error')}")
+                return []
+                
+        else:
+            print(f"API request failed with status code {response.status_code}")
+            return []
+            
+    except requests.exceptions.RequestException as e:
+        print(f"Failed to connect to the past messages API: {str(e)}")
+        return []
+    except json.JSONDecodeError as e:
+        print(f"Failed to parse API response: {str(e)}")
+        return []
+    except Exception as e:
+        print(f"An unexpected error occurred: {str(e)}")
+        return []
+
+
+
+def send_message_to_backend(message_data, user_id):
+    """
+    Send a message to the backend API for storage.
+    
+    Args:
+        message_data (dict): The message data containing role, content, and timestamp.
+        user_id (str): The ID of the user associated with the message.
+        
+    Returns:
+        bool: True if the message was successfully sent, False otherwise.
+    """
+    if not user_id:
+        print("No user ID available, not sending message to backend")
+        return False
+        
+    api_url = "https://api.practicalsystemdesign.com/api/eventbot/chat/save"
+    
+    try:
+        # Convert role to message_source (user/assistant)
+        message_source = message_data["role"]
+        
+        # Handle the content correctly based on role
+        if message_source == "assistant":
+            # For assistant messages, content is a dict with 'text' key
+            message_content = message_data["content"]["text"]
+        else:
+            # For user messages, content is a string
+            message_content = message_data["content"]
+        
+        # Prepare request payload matching the MongoDB schema expectations
+        payload = {
+            "userId": user_id,
+            "message": message_content,         # Extract just the text content
+            "message_source": message_source  # Changed from "role" to "message_source"
+        }
+        
+        # Make POST request to the API
+        response = requests.post(api_url, json=payload)
+        
+        # Check if the request was successful
+        if response.status_code == 200 or response.status_code == 201:
+            response_data = response.json()
+            
+            # Check if the API returned success
+            if response_data.get("success") == True:
+                return True
+            else:
+                print(f"API returned unsuccessful response: {response_data}")
+                return False
+                
+        else:
+            print(f"API request failed with status code {response.status_code}")
+            return False
+            
+    except requests.exceptions.RequestException as e:
+        print(f"Failed to connect to the message storage API: {str(e)}")
+        return False
+    except json.JSONDecodeError as e:
+        print(f"Failed to parse API response: {str(e)}")
+        return False
+    except Exception as e:
+        print(f"An unexpected error occurred: {str(e)}")
+        return False
+
 
 class EventAssistantRAGBot:
     def __init__(self, api_key, pinecone_api_key, pinecone_cloud, pinecone_region, index_name, bucket_name, aws_access_key_id, aws_secret_access_key, region_name):
@@ -511,6 +653,8 @@ if "checkin_status" not in st.session_state:
     st.session_state.checkin_status = ""
 if "selected_user_id" not in st.session_state:
     st.session_state.selected_user_id = None
+if "current_user_id" not in st.session_state:
+    st.session_state.current_user_id = None
 
 
 # Get API keys and configurations from environment variables
@@ -616,14 +760,25 @@ with st.sidebar:
                         additional_details = user.get("additional_details", "")
                         
                         # Perform check-in
-                        if perform_checkin(user_id):
+                        if perform_checkin(user_id)[0]:  # Unpack the tuple to get the success boolean
                             st.session_state.checked_in = True
                             st.session_state.checkin_message = f"{name}" + (f" ({additional_details})" if additional_details else "")
                             st.session_state.checkin_status = "success"
                             st.session_state.selected_user_id = user_id
+                            # Add this line to store the current user ID
+                            st.session_state.current_user_id = user_id
+                            
+                            # Fetch past messages
+                            past_messages = fetch_past_messages(user_id)
+                            if past_messages:
+                                # Sort messages by timestamp
+                                # Update session state messages
+                                st.session_state.messages = past_messages
+                            
                             st.success(f"✅ Successfully checked in: {st.session_state.checkin_message}")
                         else:
                             st.error("Failed to update check-in status. Please try again.")
+
                     else:
                         # Multiple users found, show dropdown to select
                         st.write(f"Found {len(user_data)} users with similar names. Please select your name:")
@@ -652,18 +807,32 @@ with st.sidebar:
                 selected_index = options.index(selected_option)
                 selected_user = user_data[selected_index]
                 user_id = selected_user.get("_id")
-                
                 # Perform check-in for the selected user
-                if perform_checkin(user_id):
+                checkin_success, checkin_message = perform_checkin(user_id)
+                if checkin_success:
                     st.session_state.checked_in = True
                     st.session_state.checkin_message = selected_option
                     st.session_state.checkin_status = "success"
                     st.session_state.selected_user_id = user_id
+                    # Add this line to store the current user ID
+                    st.session_state.current_user_id = user_id
+                    
+                    # Fetch past messages
+                    past_messages = fetch_past_messages(user_id)
+                    if past_messages:
+                        st.session_state.messages = past_messages
+                    
                     # Clear the multiple users found flag
                     st.session_state.multiple_users_found = False
                     st.success(f"✅ Successfully checked in: {selected_option}")
                 else:
                     st.error("Failed to update check-in status. Please try again.")
+
+
+
+
+
+                    
 
     # Add a separator between check-in and resume upload
     st.markdown("---")
@@ -717,9 +886,9 @@ with st.sidebar:
 
 # --- End Resume Upload Section ---
 
-# Custom Chat UI Implementation
-# (No changes needed in this section, but included for completeness)
-# Custom Chat UI Implementation
+
+
+
 chat_html = '<div class="custom-chat-container">'
 for message in st.session_state.messages:
     if message["role"] == "user":
@@ -728,9 +897,17 @@ for message in st.session_state.messages:
     else:  # assistant
         avatar = '<div class="avatar-icon">🤖</div>'
         content_dict = message["content"]
-        content_text = content_dict["text"]
-        vector_db_time = content_dict.get("vector_db_time")
-        llm_time = content_dict.get("llm_time")
+        
+        # Add this check to handle both string and dictionary content
+        if isinstance(content_dict, dict):
+            content_text = content_dict.get("text", "")
+            vector_db_time = content_dict.get("vector_db_time")
+            llm_time = content_dict.get("llm_time")
+        else:
+            # Handle the case when content is a string
+            content_text = content_dict
+            vector_db_time = None
+            llm_time = None
 
         chat_html += f'<div class="message-container">{avatar}<div class="bot-message">'
         
@@ -769,7 +946,33 @@ st.markdown(chat_html, unsafe_allow_html=True)
 user_input = st.chat_input("Ask a question about the event or your resume...")
 
 if user_input:
-    st.session_state.messages.append({"role": "user", "content": user_input})
+    # Create message object
+    user_message = {
+        "role": "user", 
+        "content": user_input
+    }
+    
+    # Add user message to session state
+    st.session_state.messages.append(user_message)
+    
+    # Send user message to backend if user is checked in
+    if st.session_state.current_user_id:
+        send_message_to_backend(user_message, st.session_state.current_user_id)
+    
+    # Get response from bot
     response_dict = st.session_state.bot.answer_question(user_input)
-    st.session_state.messages.append({"role": "assistant", "content": response_dict})
+    
+    # Create bot message object
+    bot_message = {
+        "role": "assistant", 
+        "content": response_dict
+    }
+    
+    # Add assistant message to session state
+    st.session_state.messages.append(bot_message)
+    
+    # Send bot message to backend if user is checked in
+    if st.session_state.current_user_id:
+        send_message_to_backend(bot_message, st.session_state.current_user_id)
+    
     st.rerun()
