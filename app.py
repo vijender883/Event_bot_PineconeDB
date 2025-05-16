@@ -21,6 +21,12 @@ import requests
 import json
 # Dynamically create list items for robustness
 import re
+# web socket
+import websocket
+import threading
+import json
+import time
+import queue
 # --- End New Imports ---
 
 # Load environment variables
@@ -30,6 +36,9 @@ load_dotenv()
 RESUME_DIR = "resume_submitted"
 os.makedirs(RESUME_DIR, exist_ok=True)
 # --- End Directory and Hash File Creation ---
+
+
+
 
 # --- New function for Check-In Feature ---
 def check_registered_user(name):
@@ -255,6 +264,100 @@ def send_message_to_backend(message_data, user_id):
     except Exception as e:
         print(f"An unexpected error occurred: {str(e)}")
         return False
+
+
+def on_message(ws, message):
+    print(message)
+    try:
+        data = json.loads(message)
+        if data.get("type") == "system_message":
+            # Add the system message to our state
+            st.session_state.message_queue.put(data)
+            print(f"Put message in queue: {data}") # For debugging
+            if st.session_state.message_queue:
+                print("got updated")
+            else:
+                print("no update")
+            print(st.session_state.message_queue)
+    except json.JSONDecodeError:
+        print(f"Received non-JSON message: {message}")
+    except Exception as e:
+        print(f"Error processing WebSocket message in thread: {e}") # Log errors in the thread
+    st.rerun()
+
+def on_error(ws, error):
+    print(f"WebSocket error: {error}")
+
+def on_close(ws, close_status_code, close_msg):
+    print(f"WebSocket connection closed: {close_status_code} - {close_msg}")
+    st.session_state.ws_connected = False
+
+def on_open(ws):
+    print("WebSocket connection established")
+    st.session_state.ws_connected = True
+    # Send an initial connection message
+    ws.send(json.dumps({
+        "type": "client_connected",
+        "client_id": "streamlit_event_bot",
+        "timestamp": time.time()
+    }))
+
+
+def on_error(ws, error):
+    print(f"WebSocket error: {error}")
+
+def on_close(ws, close_status_code, close_msg):
+    print(f"WebSocket connection closed: {close_status_code} - {close_msg}")
+    st.session_state.ws_connected = False
+
+def on_open(ws):
+    print("WebSocket connection established")
+    st.session_state.ws_connected = True
+    # Send an initial connection message
+    ws.send(json.dumps({
+        "type": "client_connected",
+        "client_id": "streamlit_event_bot",
+        "timestamp": time.time()
+    }))
+
+# Function to initialize and start WebSocket connection
+def start_websocket_connection():
+    if st.session_state.ws_thread is not None and st.session_state.ws_thread.is_alive():
+        print("WebSocket thread already running")
+        return
+        
+    # WebSocket server URL - adjust this to your Node.js server address
+    ws_url = "ws://localhost:8765"
+    
+    try:
+        # Initialize WebSocket connection
+        ws = websocket.WebSocketApp(
+            ws_url,
+            on_open=on_open,
+            on_message=on_message,
+            on_error=on_error,
+            on_close=on_close
+        )
+        st.session_state.ws_client = ws
+        
+        # Run the WebSocket client in a separate thread
+        def run_websocket():
+            while True:
+                try:
+                    ws.run_forever()
+                    # If the connection drops, wait a bit and try to reconnect
+                    time.sleep(5)
+                except Exception as e:
+                    print(f"WebSocket connection error: {e}")
+                    time.sleep(5)
+        
+        ws_thread = threading.Thread(target=run_websocket, daemon=True)
+        ws_thread.start()
+        st.session_state.ws_thread = ws_thread
+        
+    except Exception as e:
+        print(f"Failed to initialize WebSocket: {e}")
+
 
 
 class EventAssistantRAGBot:
@@ -655,6 +758,17 @@ if "selected_user_id" not in st.session_state:
     st.session_state.selected_user_id = None
 if "current_user_id" not in st.session_state:
     st.session_state.current_user_id = None
+    # Add these new session state variables
+if "ws_connected" not in st.session_state:
+    st.session_state.ws_connected = False
+if "message_queue" not in st.session_state:
+    st.session_state.message_queue = queue.Queue() # Initialize a thread-safe queue
+if "queue_size" not in st.session_state:
+    st.session_state.queue_size = 0 # Initialize a queue size
+if "ws_client" not in st.session_state:
+    st.session_state.ws_client = None
+if "ws_thread" not in st.session_state:
+    st.session_state.ws_thread = None
 
 
 # Get API keys and configurations from environment variables
@@ -729,6 +843,10 @@ How can I help you with information about this event?"""
             traceback.print_exc()
             st.stop() # Stop the app if initialization fails
 
+
+
+if "bot" in st.session_state and st.session_state.ws_thread is None:
+    start_websocket_connection()
 
 # --- Check-in Feature in Sidebar ---
 with st.sidebar:
@@ -886,6 +1004,20 @@ with st.sidebar:
 
 # --- End Resume Upload Section ---
 
+
+
+if st.session_state.message_queue.qsize() > st.session_state.queue_size:
+    print(st.session_state.message_queue)
+    # process the message\
+
+
+
+    # if st.session_state.current_user_id != None:
+    #     send_message_to_backend(processed_message, st.session_state.current_user_id)
+
+    # update queue_size
+    st.session_state.queue_size += 1
+    st.rerun()
 
 
 

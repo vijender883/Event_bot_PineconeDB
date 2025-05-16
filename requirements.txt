@@ -12,3 +12,4 @@ pypdf
 google-genai>=1.14.0 
 boto3
 botocore
+websocket-client>=1.6.0
