@@ -22,7 +22,7 @@ async def send_message(websocket):
 
             # Format the message into the required JSON payload
             payload = {
-                "type": "system_message",
+                "role": "system",
                 "content": message_content
             }
 
