@@ -3,8 +3,7 @@
 Welcome to the RAG Event Bot! This is an interactive, AI-powered chatbot designed to assist attendees at events like workshops, hackathons, and conferences. It provides real-time information about the event, can be personalized with your resume, and even helps with event check-in.
 
 This project is built to be easy to set up and run, even for those new to GitHub or deploying applications.
-
-![Event Bot Demo](https://placehold.co/800x400/d3d3d3/000000/png?text=Event+Bot+Screenshot+Here)
+# [Event Bot Demo](https://eventbotpineconedb.streamlit.app/)
 
 ## ✨ Features
 
@@ -41,7 +40,7 @@ Make sure you have the following installed:
 First, fork this repository to your own GitHub account, and then clone it to your local machine.
 
 ```bash
-git clone https://github.com/YOUR_USERNAME/RAG-Event-Bot.git
+git clone https://github.com/vijender883/Event_bot_PineconeDB
 cd RAG-Event-Bot
 ```
 

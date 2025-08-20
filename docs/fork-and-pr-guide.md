@@ -17,11 +17,11 @@ You now have a personal copy of the project!
 Next, you need to download your forked repository to your local machine. This is called "cloning."
 
 1.  On your forked repository's GitHub page, click the green **Code** button.
-2.  Copy the URL provided (it should look something like `https://github.com/YOUR_USERNAME/RAG-Event-Bot.git`).
+2.  Copy the URL provided (it should look something like `https://github.com/YOUR_USERNAME/Event_bot_PineconeDB`).
 3.  Open your terminal or command prompt and run the following command:
 
     ```bash
-    git clone https://github.com/YOUR_USERNAME/RAG-Event-Bot.git
+    git clone https://github.com/YOUR_USERNAME/Event_bot_PineconeDB
     ```
 
     Replace `YOUR_USERNAME` with your actual GitHub username.
