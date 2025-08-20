@@ -4,8 +4,8 @@ Welcome to the RAG Event Bot! This is an interactive, AI-powered chatbot designe
 
 This project is built to be easy to set up and run, even for those new to GitHub or deploying applications.
 # [Event Bot Demo Link](https://eventbotpineconedb.streamlit.app/)
-[Event Bot Image](images/without_text.png)
-[Event Bot with text](images/with_text.png)
+![Event Bot Image](images/without_text.png)
+![Event Bot with text](images/with_text.png)
 
 ## ✨ Features
 
